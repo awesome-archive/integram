@@ -154,18 +154,19 @@ func updateRoutine(b *Bot, u *tg.Update) {
 			}
 		}
 
-		// Save incoming message after processing to be sure to save onReply actions
-		err := context.Message.Message.saveToDB(db)
-
-		if err != nil {
-			log.WithError(err).Error("can't add incoming message to db")
+		// Save incoming message metadata(text and files are excluded) in case it has onReply/onEdit actions or have associated event
+		if context.Message.OnEditAction != "" || context.Message.OnReplyAction != "" || len(context.Message.EventID) > 0 {
+			err := context.Message.Message.saveToDB(db)
+			if err != nil {
+				log.WithError(err).Error("can't add incoming message to db")
+			}
 		}
+
 		if context.messageAnsweredAt != nil {
 			context.StatIncChat(StatIncomingMessageAnswered)
 		} else {
 			context.StatIncChat(StatIncomingMessageNotAnswered)
 		}
-
 	} else if context.InlineQuery != nil {
 		if service.TGInlineQueryHandler == nil {
 			context.Log().Warn("Received InlineQuery but TGInlineQueryHandler not set for service")
@@ -174,7 +175,6 @@ func updateRoutine(b *Bot, u *tg.Update) {
 
 		queryHandlerStarted := time.Now()
 		err := service.TGInlineQueryHandler(context)
-
 		if err != nil {
 			if strings.Contains(err.Error(), "QUERY_ID_INVALID") {
 				context.StatIncUser(StatInlineQueryTimeouted)
@@ -184,7 +184,6 @@ func updateRoutine(b *Bot, u *tg.Update) {
 			context.Log().WithError(err).WithField("secSpent", time.Now().Sub(queryHandlerStarted).Seconds()).WithField("secSpentSinceUpdate", time.Now().Sub(updateReceivedAt).Seconds()).Error("BotUpdateHandler InlineQuery error")
 			context.StatIncUser(StatInlineQueryProcessingError)
 		} else {
-
 			if context.inlineQueryAnsweredAt == nil {
 				context.StatIncUser(StatInlineQueryNotAnswered)
 
@@ -198,7 +197,6 @@ func updateRoutine(b *Bot, u *tg.Update) {
 				}
 			}
 		}
-
 		return
 	} else if context.ChosenInlineResult != nil {
 
@@ -480,11 +478,14 @@ func tgChosenInlineResultHandler(u *tg.Update, b *Bot, db *mgo.Database) (*Servi
 	if err != nil {
 		log.WithError(err).WithField("bot", b.ID).Error("Can't detect service")
 	}
-	user := tgUser(u.ChosenInlineResult.From)
-	chat := tgChat(u.ChosenInlineResult.Chat)
 
-	ctx := &Context{ServiceName: service.Name, User: user, Chat: chat, db: db, ChosenInlineResult: &chosenInlineResult{ChosenInlineResult: *u.ChosenInlineResult}}
+	user := tgUser(u.ChosenInlineResult.From)
+	ctx := &Context{ServiceName: service.Name, User: user, db: db, ChosenInlineResult: &chosenInlineResult{ChosenInlineResult: *u.ChosenInlineResult}}
 	ctx.User.ctx = ctx
+	if u.Message != nil {
+		// in case we corellated chosen update and chat message
+		ctx.Chat = tgChat(u.Message.Chat)
+	}
 	ctx.Chat.ctx = ctx
 
 	/*chatID:=0
@@ -505,9 +506,13 @@ func tgChosenInlineResultHandler(u *tg.Update, b *Bot, db *mgo.Database) (*Servi
 			Text:        u.ChosenInlineResult.Query, // Todo: thats a lie. The actual message content is known while producing inline results
 			FromID:      u.ChosenInlineResult.From.ID,
 			BotID:       b.ID,
+			ChatID:      ctx.Chat.ID,
 			Date:        time.Now(),
 		}}
 
+	if u.Message != nil {
+		msg.MsgID = u.Message.MessageID
+	}
 	// we need to save this message!
 	err = db.C("messages").Insert(&msg)
 
@@ -701,7 +706,7 @@ func migrateToSuperGroup(db *mgo.Database, fromChatID int64, toChatID int64) {
 }
 func tgUpdateHandler(u *tg.Update, b *Bot, db *mgo.Database) (*Service, *Context) {
 
-	if u.Message != nil {
+	if u.Message != nil && u.ChosenInlineResult == nil {
 		if u.Message.LeftChatMember != nil {
 			db.C("chats").UpdateId(u.Message.Chat.ID, bson.M{"$pull": bson.M{"membersids": u.Message.From.ID}})
 			return nil, nil
@@ -753,7 +758,10 @@ func tgUpdateHandler(u *tg.Update, b *Bot, db *mgo.Database) (*Service, *Context
 	return
 }*/
 
+// saveToDB stores incoming message metadata to the database
 func (m *Message) saveToDB(db *mgo.Database) error {
+	// text is excluded, instead saving textHash
+	m.TextHash = m.GetTextHash()
 	return db.C("messages").Insert(m)
 }
 

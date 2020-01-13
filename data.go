@@ -3,17 +3,13 @@ package integram
 import (
 	"errors"
 	"fmt"
-	"net/http"
-
 	"reflect"
 	"runtime"
 	"strings"
 	"time"
 
-	"github.com/requilence/url"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/oauth2"
-	"gopkg.in/mgo.v2"
+	mgo "gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 )
 
@@ -58,13 +54,11 @@ func ensureIndexes() {
 	db.C("chats_cache").EnsureIndex(mgo.Index{Key: []string{"expiresat"}, ExpireAfter: time.Second})
 	db.C("chats_cache").EnsureIndex(mgo.Index{Key: []string{"key", "chatid", "service"}, Unique: true})
 
-	db.C("stats").EnsureIndex(mgo.Index{Key: []string{"s","k", "d"}, Unique: true})
+	db.C("stats").EnsureIndex(mgo.Index{Key: []string{"s", "k", "d"}, Unique: true})
 
 	db.C("stats_unique").EnsureIndex(mgo.Index{Key: []string{"exp"}, ExpireAfter: time.Second})
 	db.C("stats_unique").EnsureIndex(mgo.Index{Key: []string{"s", "k", "d", "p"}, Unique: true})
 	db.C("stats_unique").EnsureIndex(mgo.Index{Key: []string{"s", "k", "d", "p", "u"}, Unique: true})
-
-
 
 }
 
@@ -146,7 +140,7 @@ func (c *Context) FindChat(query interface{}) (chatData, error) {
 	chat := chatData{}
 	serviceID := c.getServiceID()
 
-	err := c.db.C("chats").Find(query).Select(bson.M{"type": 1, "firstname": 1, "lastname": 1, "username": 1, "title": 1, "settings." + serviceID: 1, "protected." + serviceID: 1, "keyboardperbot": 1, "tz": 1, "deactivated":1, "hooks": 1}).One(&chat)
+	err := c.db.C("chats").Find(query).Select(bson.M{"type": 1, "firstname": 1, "lastname": 1, "username": 1, "title": 1, "settings." + serviceID: 1, "protected." + serviceID: 1, "keyboardperbot": 1, "tz": 1, "deactivated": 1, "hooks": 1}).One(&chat)
 	if err != nil {
 		//c.Log().WithError(err).WithField("query", query).Error("Can't find chat")
 		return chat, err
@@ -161,7 +155,7 @@ func (c *Context) FindChats(query interface{}) ([]chatData, error) {
 	chats := []chatData{}
 	serviceID := c.getServiceID()
 
-	err := c.db.C("chats").Find(query).Select(bson.M{"type": 1, "firstname": 1, "lastname": 1, "username": 1, "title": 1, "settings." + serviceID: 1, "protected." + serviceID: 1, "keyboardperbot": 1, "tz": 1, "deactivated":1, "hooks": 1}).All(&chats)
+	err := c.db.C("chats").Find(query).Select(bson.M{"type": 1, "firstname": 1, "lastname": 1, "username": 1, "title": 1, "settings." + serviceID: 1, "protected." + serviceID: 1, "keyboardperbot": 1, "tz": 1, "deactivated": 1, "hooks": 1}).All(&chats)
 	if err != nil {
 		//c.Log().WithError(err).WithField("query", query).Error("Can't find chat")
 		return chats, err
@@ -178,7 +172,7 @@ func (c *Context) FindChatsLimit(query interface{}, limit int, sort ...string) (
 	chats := []chatData{}
 	serviceID := c.getServiceID()
 
-	err := c.db.C("chats").Find(query).Limit(limit).Sort(sort...).Select(bson.M{"type": 1, "firstname": 1, "lastname": 1, "username": 1, "title": 1, "settings." + serviceID: 1, "protected." + serviceID: 1, "keyboardperbot": 1, "tz": 1, "deactivated":1, "hooks": 1}).All(&chats)
+	err := c.db.C("chats").Find(query).Limit(limit).Sort(sort...).Select(bson.M{"type": 1, "firstname": 1, "lastname": 1, "username": 1, "title": 1, "settings." + serviceID: 1, "protected." + serviceID: 1, "keyboardperbot": 1, "tz": 1, "deactivated": 1, "hooks": 1}).All(&chats)
 	if err != nil {
 		//c.Log().WithError(err).WithField("query", query).Error("Can't find chat")
 		return chats, err
@@ -395,7 +389,7 @@ func (user *User) Chat() Chat {
 // IsPrivateStarted indicates if user started the private dialog with a bot (e.g. pressed the start button)
 func (user *User) IsPrivateStarted() bool {
 	err := user.ctx.Db().C("messages").Find(bson.M{"chatid": user.ID, "botid": user.ctx.Bot().ID, "fromid": user.ID}).Select(bson.M{"_id": 1}).One(nil)
-	if err == nil{
+	if err == nil {
 		return true
 	}
 	return false
@@ -420,6 +414,13 @@ func (user *User) SetCache(key string, val interface{}, ttl time.Duration) error
 		}
 		log.WithError(err).WithField("key", key).Error("Can't set user cache value")
 	}
+	return err
+}
+
+// ClearAllCacheKeys removes all User's cache keys
+func (user *User) ClearAllCacheKeys() error {
+	serviceID := user.ctx.getServiceID()
+	_, err := user.ctx.db.C("users_cache").RemoveAll(bson.M{"userid": user.ID, "service": serviceID})
 	return err
 }
 
@@ -452,6 +453,13 @@ func (chat *Chat) SetCache(key string, val interface{}, ttl time.Duration) error
 		}
 		log.WithError(err).WithField("key", key).Error("Can't set user cache value")
 	}
+	return err
+}
+
+// ClearAllCacheKeys removes all Chat's cache keys
+func (chat *Chat) ClearAllCacheKeys() error {
+	serviceID := chat.ctx.getServiceID()
+	_, err := chat.ctx.db.C("chats_cache").RemoveAll(bson.M{"chatid": chat.ID, "service": serviceID})
 	return err
 }
 
@@ -575,8 +583,7 @@ func (c *Context) getServiceID() string {
 	s := c.Service()
 
 	if s == nil {
-		// todo: is error handling is need here
-		return ""
+		return c.ServiceName
 	}
 
 	if c.ServiceBaseURL.Host == "" {
@@ -636,7 +643,6 @@ func (chat *Chat) protectedSettings() (*chatProtected, error) {
 	// Not a error – just empty settings
 	return data.Protected[serviceID], err
 }
-
 
 // Settings bind User's settings for service to the interface
 func (user *User) Settings(out interface{}) error {
@@ -884,9 +890,7 @@ func (user *User) saveProtectedSetting(key string, value interface{}) error {
 		return errors.New("protected setting with key " + key + " not exists")
 	}
 
-	info, err := user.ctx.db.C("users").UpsertId(user.ID, bson.M{"$set": bson.M{"protected." + serviceID + "." + strings.ToLower(key): value}})
-
-	fmt.Printf("saveProtectedSetting %v=%v err %v info %+v\n", key, value, err, info)
+	_, err := user.ctx.db.C("users").UpsertId(user.ID, bson.M{"$set": bson.M{"protected." + serviceID + "." + strings.ToLower(key): value}})
 
 	return err
 }
@@ -899,15 +903,15 @@ func (chat *Chat) SaveSetting(key string, value interface{}) error {
 	var cd chatData
 	_, err := chat.ctx.db.C("chats").FindId(chat.ID).Select(bson.M{"settings." + serviceID: 1}).
 		Apply(
-		mgo.Change{
-			Update: bson.M{
-				"$set":         bson.M{"settings." + serviceID + "." + key: value},
-				"$setOnInsert": bson.M{"createdat": time.Now()},
+			mgo.Change{
+				Update: bson.M{
+					"$set":         bson.M{"settings." + serviceID + "." + key: value},
+					"$setOnInsert": bson.M{"createdat": time.Now()},
+				},
+				Upsert:    true,
+				ReturnNew: true,
 			},
-			Upsert:    true,
-			ReturnNew: true,
-		},
-		&cd)
+			&cd)
 
 	if err == nil && chat.data != nil && chat.data.Settings != nil && cd.Settings != nil && cd.Settings[serviceID] != nil {
 		chat.data.Settings[serviceID] = cd.Settings[serviceID]
@@ -929,15 +933,15 @@ func (user *User) SaveSetting(key string, value interface{}) error {
 	var ud userData
 	_, err := user.ctx.db.C("users").FindId(user.ID).Select(bson.M{"settings." + serviceID: 1}).
 		Apply(
-		mgo.Change{
-			Update: bson.M{
-				"$set":         bson.M{"settings." + serviceID + "." + key: value},
-				"$setOnInsert": bson.M{"createdat": time.Now()},
+			mgo.Change{
+				Update: bson.M{
+					"$set":         bson.M{"settings." + serviceID + "." + key: value},
+					"$setOnInsert": bson.M{"createdat": time.Now()},
+				},
+				Upsert:    true,
+				ReturnNew: true,
 			},
-			Upsert:    true,
-			ReturnNew: true,
-		},
-		&ud)
+			&ud)
 
 	if err == nil && user.data != nil && user.data.Settings != nil && ud.Settings != nil && ud.Settings[serviceID] != nil {
 		user.data.Settings[serviceID] = ud.Settings[serviceID]
@@ -946,191 +950,9 @@ func (user *User) SaveSetting(key string, value interface{}) error {
 	return err
 }
 
-// AuthTempToken returns Auth token used in OAuth process to associate TG user with OAuth creditianals
-func (user *User) AuthTempToken() string {
-
-	host := user.ctx.ServiceBaseURL.Host
-	if host == "" {
-		host = user.ctx.Service().DefaultBaseURL.Host
-	}
-
-	serviceBaseURL := user.ctx.ServiceBaseURL.String()
-	if serviceBaseURL == "" {
-		serviceBaseURL = user.ctx.Service().DefaultBaseURL.String()
-	}
-
-	ps, _ := user.protectedSettings()
-	if ps.AuthTempToken != "" {
-		fmt.Println("found AuthTempToken:" + ps.AuthTempToken)
-
-		oAuthIDCacheFound := oAuthIDCacheVal{}
-		if exists := user.Cache("auth_"+ps.AuthTempToken, &oAuthIDCacheFound); !exists {
-			oAuthIDCacheFound = oAuthIDCacheVal{BaseURL: serviceBaseURL}
-			user.SetCache("auth_"+ps.AuthTempToken, oAuthIDCacheFound, time.Hour*24)
-		}
-
-		u, _ := url.Parse(oAuthIDCacheFound.BaseURL)
-
-		if u != nil && u.Host == host {
-			return ps.AuthTempToken
-		}
-	}
-
-	rnd := strings.ToLower(rndStr.Get(16))
-	user.SetCache("auth_"+rnd, oAuthIDCacheVal{BaseURL: serviceBaseURL}, time.Hour*24)
-
-	err := user.saveProtectedSetting("AuthTempToken", rnd)
-
-	if err != nil {
-		user.ctx.Log().WithError(err).Error("Error saving AuthTempToken")
-	}
-	return rnd
-}
-
-// OauthRedirectURL used in OAuth process as returning URL
-func (user *User) OauthRedirectURL() string {
-	providerID := user.ctx.OAuthProvider().internalID()
-	if providerID == user.ctx.ServiceName {
-		return fmt.Sprintf("%s/auth/%s", Config.BaseURL, user.ctx.ServiceName)
-	}
-
-	return fmt.Sprintf("%s/auth/%s/%s", Config.BaseURL, user.ctx.ServiceName, providerID)
-}
-
-// OauthInitURL used in OAuth process as returning URL
-func (user *User) OauthInitURL() string {
-	authTempToken := user.AuthTempToken()
-	s := user.ctx.Service()
-	if authTempToken == "" {
-		user.ctx.Log().Error("authTempToken is empty")
-		return ""
-	}
-	if s.DefaultOAuth2 != nil {
-		provider := user.ctx.OAuthProvider()
-
-		return provider.OAuth2Client(user.ctx).AuthCodeURL(authTempToken, oauth2.AccessTypeOffline)
-	}
-	if s.DefaultOAuth1 != nil {
-		return fmt.Sprintf("%s/oauth1/%s/%s", Config.BaseURL, s.Name, authTempToken)
-	}
-	return ""
-}
 
 func escapeDot(s string) string {
 	return strings.Replace(s, ".", "_", -1)
-}
-
-// OAuthHTTPClient returns HTTP client with Bearer authorization headers
-func (user *User) OAuthHTTPClient() *http.Client {
-
-	ps, _ := user.protectedSettings()
-
-	if ps == nil {
-		return nil
-	}
-
-	if ps.OAuthToken == "" {
-		return nil
-	}
-
-	if user.ctx.Service().DefaultOAuth2 != nil {
-		ts := user.ctx.OAuthProvider().OAuth2Client(user.ctx).TokenSource(oauth2.NoContext, &oauth2.Token{AccessToken: ps.OAuthToken, RefreshToken: ps.OAuthRefreshToken, Expiry: *ps.OAuthExpireDate, TokenType: "Bearer"})
-		if ps.OAuthExpireDate != nil && ps.OAuthExpireDate.Before(time.Now().Add(time.Second*5)) {
-			token, err := ts.Token()
-			if err != nil {
-				if strings.Contains(err.Error(), "revoked") || strings.Contains(err.Error(), "invalid_grant") {
-					ps.OAuthToken = ""
-					ps.OAuthExpireDate = nil
-					user.saveProtectedSettings()
-					//todo: provide revoked callback
-				}
-				user.ctx.Log().WithError(err).Error("OAuth token refresh failed")
-				return nil
-			}
-
-			if token != nil {
-				ps.OAuthToken = token.AccessToken
-				if token.RefreshToken != "" {
-					ps.OAuthRefreshToken = token.RefreshToken
-				}
-				ps.OAuthExpireDate = &token.Expiry
-				user.saveProtectedSettings()
-			}
-		}
-		return oauth2.NewClient(oauth2.NoContext, ts)
-	} else if user.ctx.Service().DefaultOAuth1 != nil {
-		//todo make a correct httpclient
-		return http.DefaultClient
-	}
-	return nil
-}
-
-// OAuthValid checks if OAuthToken for service is set
-func (user *User) OAuthValid() bool {
-	ps, _ := user.protectedSettings()
-
-	if ps == nil {
-		return false
-	}
-
-	if ps.OAuthToken == "" {
-		return false
-	}
-	return true
-}
-
-// OAuthToken returns OAuthToken for service
-func (user *User) OAuthToken() string {
-	// todo: oauthtoken per host?
-	/*
-		host := user.ctx.ServiceBaseURL.Host
-
-		if host == "" {
-			host = user.ctx.Service().DefaultBaseURL.Host
-		}
-	*/
-	ps, _ := user.protectedSettings()
-
-	if ps != nil {
-		if ps.OAuthExpireDate != nil && ps.OAuthExpireDate.Before(time.Now().Add(time.Second*5)) {
-			token, err := user.ctx.OAuthProvider().OAuth2Client(user.ctx).TokenSource(oauth2.NoContext, &oauth2.Token{AccessToken: ps.OAuthToken, Expiry: *ps.OAuthExpireDate, RefreshToken: ps.OAuthRefreshToken}).Token()
-
-			if err != nil {
-				if strings.Contains(err.Error(), "revoked") || strings.Contains(err.Error(), "invalid_grant") {
-					//remove stored OAuthToken
-					//todo: provide revoked callback
-					ps.OAuthToken = ""
-					ps.OAuthExpireDate = nil
-					user.saveProtectedSettings()
-				}
-				user.ctx.Log().WithError(err).Error("OAuth token refresh failed")
-				return ""
-			}
-
-			if token != nil {
-				ps.OAuthToken = token.AccessToken
-				if token.RefreshToken != "" {
-					ps.OAuthRefreshToken = token.RefreshToken
-				}
-				ps.OAuthExpireDate = &token.Expiry
-				user.saveProtectedSettings()
-
-			}
-
-		}
-		return ps.OAuthToken
-	}
-
-	return ""
-}
-
-// ResetOAuthToken reset OAuthToken for service
-func (user *User) ResetOAuthToken() error {
-	err := user.saveProtectedSetting("OAuthToken", "")
-	if err != nil {
-		user.ctx.Log().WithError(err).Error("ResetOAuthToken error")
-	}
-	return err
 }
 
 // SetAfterAuthAction sets the handlerFunc and it's args that will be triggered on success user Auth.
@@ -1157,31 +979,6 @@ func (user *User) SetAfterAuthAction(handlerFunc interface{}, args ...interface{
 	user.saveProtectedSettings()
 
 	return nil
-}
-
-func findOauthProviderByID(db *mgo.Database, id string) (*OAuthProvider, error) {
-	oap := OAuthProvider{}
-
-	if s, _ := serviceByName(id); s != nil {
-		return s.DefaultOAuthProvider(), nil
-	}
-
-	err := db.C("oauth_providers").FindId(id).One(&oap)
-	if err != nil {
-		return nil, err
-	}
-
-	return &oap, nil
-}
-
-func findOauthProviderByHost(db *mgo.Database, host string) (*OAuthProvider, error) {
-	oap := OAuthProvider{}
-	err := db.C("oauth_providers").Find(bson.M{"baseurl.host": strings.ToLower(host)}).One(&oap)
-	if err != nil {
-		return nil, err
-	}
-
-	return &oap, nil
 }
 
 // WebPreview generate fake webpreview and store it in DB. Telegram will resolve it as we need

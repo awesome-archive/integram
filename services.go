@@ -2,24 +2,25 @@ package integram
 
 import (
 	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/mrjones/oauth"
-	"github.com/requilence/url"
-	"github.com/requilence/jobs"
-	log "github.com/sirupsen/logrus"
-	"golang.org/x/oauth2"
-	"net/http"
-
-	"encoding/json"
-	"gopkg.in/mgo.v2"
 	"io/ioutil"
+	"net/http"
+	"os"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
-	"os"
-	"strings"
+
+	"github.com/mrjones/oauth"
+	"github.com/requilence/jobs"
+	"github.com/requilence/url"
+	log "github.com/sirupsen/logrus"
+	"golang.org/x/oauth2"
+
+	"gopkg.in/mgo.v2"
 )
 
 const standAloneServicesFileName = "standAloneServices.json"
@@ -94,6 +95,9 @@ type Service struct {
 	// Can be used for services with tiny load
 	UseWebhookInsteadOfLongPolling bool
 
+	// Can be used to automatically clean up old messages metadata from database
+	RemoveMessagesOlderThan *time.Duration
+
 	machineURL string // in case of multi-instance mode URL is used to talk with the service
 
 	rootPackagePath string
@@ -129,6 +133,10 @@ type DefaultOAuth1 struct {
 type DefaultOAuth2 struct {
 	oauth2.Config
 	AccessTokenReceiver func(serviceContext *Context, r *http.Request) (token string, expiresAt *time.Time, refreshToken string, err error)
+
+	// duration to cache temp token to associate with user
+	// default(when zero) will be set to 30 days
+	AuthTempTokenCacheTime time.Duration
 }
 
 func servicesHealthChecker() {
@@ -160,6 +168,9 @@ func servicesHealthChecker() {
 					log.Errorf("HealthChecker %s, network error: %s", serviceName, err.Error())
 					continue
 				}
+
+				// always close the response-body, even if content is not required
+				defer resp.Body.Close()
 
 				if resp.StatusCode != 200 {
 					b, err := ioutil.ReadAll(resp.Body)
@@ -392,8 +403,13 @@ func (s *Service) trimFuncPath(fullPath string) string{
 // Register the service's config and corresponding botToken
 func Register(servicer Servicer, botToken string) {
 	//jobs.Config.Db.Address="192.168.1.101:6379"
-
+	db := mongoSession.Clone().DB(mongo.Database)
 	service := servicer.Service()
+	err := migrations(db, service.Name)
+	if err != nil {
+		log.Fatalf("failed to apply migrations: %s", err.Error())
+	}
+
 	if service.DefaultOAuth1 != nil {
 		if service.DefaultOAuth1.AccessTokenReceiver == nil {
 			err := errors.New("OAuth1 need an AccessTokenReceiver func to be specified\n")
@@ -514,14 +530,16 @@ func Register(servicer Servicer, botToken string) {
 		return
 	}
 
-	err := service.registerBot(botToken)
+	err = service.registerBot(botToken)
 	if err != nil {
 		log.WithError(err).WithField("token", botToken).Panic("Can't register the bot")
 	}
+	go ServiceWorkerAutorespawnGoroutine(service)
 
 	if service.Worker != nil {
-		go SeviceWorkerAutorespawnGoroutine(service)
+		go ServiceWorkerAutorespawnGoroutine(service)
 	}
+
 	// todo: here is possible bug if service just want to use inline keyboard callbacks via setCallbackAction
 	if service.TGNewMessageHandler == nil && service.TGInlineQueryHandler == nil {
 		return
@@ -529,19 +547,18 @@ func Register(servicer Servicer, botToken string) {
 
 }
 
-func SeviceWorkerAutorespawnGoroutine(s *Service) {
+func ServiceWorkerAutorespawnGoroutine(s *Service) {
 
 	c := s.EmptyContext()
 	defer func() {
 		if r := recover(); r != nil {
 			stack := stack(3)
-			log.Errorf("Panic recovery at SeviceWorkerAutorespawnGoroutine -> %s\n%s\n", r, stack)
+			log.Errorf("Panic recovery at ServiceWorkerAutorespawnGoroutine -> %s\n%s\n", r, stack)
 		}
-		go SeviceWorkerAutorespawnGoroutine(s) // restart
+		go ServiceWorkerAutorespawnGoroutine(s) // restart
 	}()
 
 	err := s.Worker(c)
-
 	if err != nil {
 		s.Log().WithError(err).Error("Worker return error")
 	}
